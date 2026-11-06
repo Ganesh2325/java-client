@@ -77,8 +77,8 @@ dependencies {
             }
         }
     }
-    implementation 'com.google.code.gson:gson:2.14.0'
-    implementation 'net.bytebuddy:byte-buddy:1.18.15'
+    implementation 'com.google.code.gson:gson:2.15.0'
+    implementation 'net.bytebuddy:byte-buddy:1.18.16'
     implementation "org.slf4j:slf4j-api:${slf4jVersion}"
     implementation 'org.jspecify:jspecify:1.0.1'
 }
@@ -300,7 +300,6 @@ testing {
                         exclude '**/FingerPrintTest.class'
                         exclude '**/ImagesComparisonTest.class'
                         exclude '**/KeyCodeTest.class'
-                        exclude '**/LogEventTest.class'
                         exclude '**/UIAutomator2Test.class'
                         exclude '**/AndroidPageObjectTest.class'
                         exclude '**/MobileBrowserCompatibilityTest.class'
