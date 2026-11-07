@@ -46,10 +46,12 @@ import java.util.List;
 import java.util.Map;
 
 import static io.appium.java_client.internal.Preconditions.checkNotNull;
+import static io.appium.java_client.pagefactory.utils.ProxyFactory.getEnhancedInterfaceProxy;
 import static io.appium.java_client.pagefactory.utils.ProxyFactory.getEnhancedProxy;
 import static io.appium.java_client.pagefactory.utils.WebDriverUnpackUtility.unpackObjectFromSearchContext;
 import static io.appium.java_client.remote.options.SupportsAutomationNameOption.AUTOMATION_NAME_OPTION;
 import static java.time.Duration.ofSeconds;
+import static java.util.Objects.requireNonNull;
 
 /**
  * Default decorator for use with PageFactory. Will decorate 1) all of the
@@ -68,12 +70,19 @@ public class AppiumFieldDecorator implements FieldDecorator {
     );
     /** The default timeout of waiting for an element presence. */
     public static final Duration DEFAULT_WAITING_TIMEOUT = ofSeconds(1);
+    private static final ThreadLocal<LocatorGroupStrategy> CURRENT_DEFAULT_STRATEGY =
+            ThreadLocal.withInitial(() -> LocatorGroupStrategy.CHAIN);
     private final WeakReference<WebDriver> webDriverReference;
     private final DefaultFieldDecorator defaultElementFieldDecorator;
     private final AppiumElementLocatorFactory widgetLocatorFactory;
     private final String platform;
     private final String automation;
     private final Duration duration;
+    private final LocatorGroupStrategy defaultLocatorGroupStrategy;
+
+    static LocatorGroupStrategy currentDefaultStrategy() {
+        return CURRENT_DEFAULT_STRATEGY.get();
+    }
 
     /**
      * Creates field decorator based on {@link SearchContext} and timeout {@code duration}.
@@ -84,16 +93,42 @@ public class AppiumFieldDecorator implements FieldDecorator {
      * @param duration is a desired duration of the waiting for an element presence.
      */
     public AppiumFieldDecorator(SearchContext context, Duration duration) {
+        this(context, duration, LocatorGroupStrategy.CHAIN);
+    }
+
+    /**
+     * Creates field decorator based on {@link SearchContext}, timeout {@code duration},
+     * and a custom default {@link LocatorGroupStrategy}.
+     *
+     * <p>Precedence order: field-level {@link HowToUseLocators} &gt; widget/page/declaring class
+     * {@link HowToUseLocators} (including superclasses, interfaces, and enclosing classes)
+     * &gt; {@code defaultLocatorGroupStrategy}. Note that when {@link HowToUseLocators} is present,
+     * both {@link HowToUseLocators#androidAutomation()} and {@link HowToUseLocators#iOSXCUITAutomation()}
+     * default to {@link LocatorGroupStrategy#CHAIN} for any platform attribute omitted in the annotation.
+     *
+     * @param context                     is an instance of {@link SearchContext}
+     * @param duration                    is a desired duration of the waiting for an element presence.
+     * @param defaultLocatorGroupStrategy is the default strategy used when {@link HowToUseLocators} is not present.
+     */
+    public AppiumFieldDecorator(
+            SearchContext context,
+            Duration duration,
+            LocatorGroupStrategy defaultLocatorGroupStrategy
+    ) {
         this.webDriverReference = requireWebDriverReference(context);
         this.platform = readStringCapability(context, CapabilityType.PLATFORM_NAME);
         this.automation = readStringCapability(context, AUTOMATION_NAME_OPTION);
         this.duration = duration;
+        this.defaultLocatorGroupStrategy = requireNonNull(
+                defaultLocatorGroupStrategy,
+                "Default locator group strategy must not be null"
+        );
 
         defaultElementFieldDecorator = createFieldDecorator(new AppiumElementLocatorFactory(
-                context, duration, new DefaultElementByBuilder(platform, automation)
+                context, duration, new DefaultElementByBuilder(platform, automation, this.defaultLocatorGroupStrategy)
         ));
         widgetLocatorFactory = new AppiumElementLocatorFactory(
-                context, duration, new WidgetByBuilder(platform, automation)
+                context, duration, new WidgetByBuilder(platform, automation, this.defaultLocatorGroupStrategy)
         );
     }
 
@@ -108,6 +143,17 @@ public class AppiumFieldDecorator implements FieldDecorator {
     }
 
     /**
+     * Creates field decorator based on {@link SearchContext}, the default timeout,
+     * and a custom default {@link LocatorGroupStrategy}.
+     *
+     * @param context                     is an instance of {@link SearchContext}
+     * @param defaultLocatorGroupStrategy is the default strategy used when {@link HowToUseLocators} is not present.
+     */
+    public AppiumFieldDecorator(SearchContext context, LocatorGroupStrategy defaultLocatorGroupStrategy) {
+        this(context, DEFAULT_WAITING_TIMEOUT, defaultLocatorGroupStrategy);
+    }
+
+    /**
      * Creates field decorator based on {@link SearchContext} and timeout {@code duration}.
      *
      * @param contextReference  reference to {@link SearchContext}
@@ -116,17 +162,33 @@ public class AppiumFieldDecorator implements FieldDecorator {
      * @param duration is a desired duration of the waiting for an element presence.
      */
     AppiumFieldDecorator(WeakReference<SearchContext> contextReference, Duration duration) {
+        this(contextReference, duration, currentDefaultStrategy());
+    }
+
+    AppiumFieldDecorator(
+            WeakReference<SearchContext> contextReference,
+            Duration duration,
+            LocatorGroupStrategy defaultLocatorGroupStrategy
+    ) {
         var cr = contextReference.get();
         this.webDriverReference = requireWebDriverReference(cr);
         this.platform = readStringCapability(cr, CapabilityType.PLATFORM_NAME);
         this.automation = readStringCapability(cr, AUTOMATION_NAME_OPTION);
         this.duration = duration;
+        this.defaultLocatorGroupStrategy = requireNonNull(
+                defaultLocatorGroupStrategy,
+                "Default locator group strategy must not be null"
+        );
 
         defaultElementFieldDecorator = createFieldDecorator(new AppiumElementLocatorFactory(
-                contextReference, duration, new DefaultElementByBuilder(platform, automation)
+                contextReference,
+                duration,
+                new DefaultElementByBuilder(platform, automation, this.defaultLocatorGroupStrategy)
         ));
         widgetLocatorFactory = new AppiumElementLocatorFactory(
-                contextReference, duration, new WidgetByBuilder(platform, automation)
+                contextReference,
+                duration,
+                new WidgetByBuilder(platform, automation, this.defaultLocatorGroupStrategy)
         );
     }
 
@@ -200,18 +262,29 @@ public class AppiumFieldDecorator implements FieldDecorator {
      * @return a field value or null.
      */
     public Object decorate(ClassLoader ignored, Field field) {
-        Object result = decorateWidget(field);
-        return result == null ? defaultElementFieldDecorator.decorate(ignored, field) : result;
+        LocatorGroupStrategy previous = CURRENT_DEFAULT_STRATEGY.get();
+        CURRENT_DEFAULT_STRATEGY.set(defaultLocatorGroupStrategy);
+        try {
+            Object result = decorateWidget(field);
+            return result == null ? defaultElementFieldDecorator.decorate(ignored, field) : result;
+        } finally {
+            if (previous == LocatorGroupStrategy.CHAIN) {
+                CURRENT_DEFAULT_STRATEGY.remove();
+            } else {
+                CURRENT_DEFAULT_STRATEGY.set(previous);
+            }
+        }
     }
 
     @Nullable
     private Object decorateWidget(Field field) {
         Class<?> type = field.getType();
-        if (!Widget.class.isAssignableFrom(type) && !List.class.isAssignableFrom(type)) {
+        if (!Widget.class.isAssignableFrom(type) && !List.class.isAssignableFrom(type)
+                && !isOverriddenWidgetInterface(type, field)) {
             return null;
         }
 
-        Class<? extends Widget> widgetType;
+        Class<?> widgetType;
         boolean isAlist = false;
         if (List.class.isAssignableFrom(type)) {
             isAlist = true;
@@ -227,18 +300,17 @@ public class AppiumFieldDecorator implements FieldDecorator {
             }
 
             if (listType instanceof Class) {
-                if (!Widget.class.isAssignableFrom((Class<?>) listType)) {
+                Class<?> listClass = (Class<?>) listType;
+                if (!Widget.class.isAssignableFrom(listClass) && !isOverriddenWidgetInterface(listClass, field)) {
                     return null;
                 }
-                //noinspection unchecked
-                widgetType = (Class<? extends Widget>) listType;
+                widgetType = listClass;
             } else {
                 return null;
             }
 
         } else {
-            //noinspection unchecked
-            widgetType = (Class<? extends Widget>) field.getType();
+            widgetType = field.getType();
         }
 
         CacheableLocator locator = widgetLocatorFactory.createLocator(field);
@@ -247,17 +319,48 @@ public class AppiumFieldDecorator implements FieldDecorator {
         if (isAlist) {
             return getEnhancedProxy(
                     ArrayList.class,
-                    new WidgetListInterceptor(locator, webDriverReference, map, widgetType, duration)
+                    new WidgetListInterceptor(
+                            locator,
+                            webDriverReference,
+                            map,
+                            widgetType,
+                            duration,
+                            defaultLocatorGroupStrategy
+                    )
             );
         }
 
-        Constructor<? extends Widget> constructor = WidgetConstructorUtil.findConvenientConstructor(widgetType);
+        WidgetInterceptor interceptor = new WidgetInterceptor(
+                locator,
+                webDriverReference,
+                null,
+                map,
+                duration,
+                defaultLocatorGroupStrategy
+        );
+        if (widgetType.isInterface()) {
+            return getEnhancedInterfaceProxy(widgetType, interceptor);
+        }
+
+        //noinspection unchecked
+        Class<? extends Widget> widgetClass = (Class<? extends Widget>) widgetType;
+        Constructor<? extends Widget> constructor = WidgetConstructorUtil.findConvenientConstructor(widgetClass);
         return getEnhancedProxy(
-                widgetType,
+                widgetClass,
                 new Class[]{constructor.getParameterTypes()[0]},
                 new Object[]{proxyForAnElement(locator)},
-                new WidgetInterceptor(locator, webDriverReference, null, map, duration)
+                interceptor
         );
+    }
+
+    /**
+     * True when {@code type} is a widget contract rather than a {@link WebElement}.
+     * {@code @OverrideWidget} on an element field keeps the normal element proxy.
+     */
+    private static boolean isOverriddenWidgetInterface(Class<?> type, Field field) {
+        return type.isInterface()
+                && !WebElement.class.isAssignableFrom(type)
+                && field.isAnnotationPresent(OverrideWidget.class);
     }
 
     private WebElement proxyForAnElement(ElementLocator locator) {

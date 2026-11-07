@@ -66,7 +66,7 @@ jobs:
         java-version: ${{ matrix.java }}
 
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v6.4.0
+      uses: gradle/actions/setup-gradle@v6.4.1
 
     - name: Resolve Selenium snapshot version
       if: matrix.selenium == 'snapshot'
@@ -120,15 +120,15 @@ jobs:
         java-version: 17
 
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v6.4.0
+      uses: gradle/actions/setup-gradle@v6.4.1
 
     - name: Install Node.js
       uses: actions/setup-node@v7
       with:
         node-version: 'lts/*'
 
-    # The beta versions of the server and of the driver are used if both are newer than the stable ones,
-    # except for the Flutter tests, which always use the stable ones
+    # The beta server is used if it is newer than the stable one and a driver supports it (the driver is picked
+    # by its Appium peer range), except for the Flutter tests, which always use the stable server
     - name: Resolve Appium versions
       id: appium-versions
       run: >-

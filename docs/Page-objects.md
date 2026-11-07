@@ -309,6 +309,25 @@ PageFactory.initElements(new AppiumFieldDecorator(searchContext,
 );
 ```
 
+- To change the default `LocatorGroupStrategy` (for example to `LocatorGroupStrategy.ALL_POSSIBLE`) for all fields that do not declare their own `@HowToUseLocators` (supported since Appium Java Client 11.1.0):
+```java
+import io.appium.java_client.pagefactory.*;
+import io.appium.java_client.support.PageFactory;
+import java.time.Duration;
+import static io.appium.java_client.pagefactory.LocatorGroupStrategy.ALL_POSSIBLE;
+
+PageFactory.initElements(
+    new AppiumFieldDecorator(searchContext, Duration.ofSeconds(15), ALL_POSSIBLE),
+    pageObject
+);
+// Or with the default waiting timeout:
+PageFactory.initElements(
+    new AppiumFieldDecorator(searchContext, ALL_POSSIBLE),
+    pageObject
+);
+```
+You can also annotate a page object or `Widget` class (or a superclass, enclosing class, or interface) with `@HowToUseLocators(androidAutomation = ALL_POSSIBLE, iOSXCUITAutomation = ALL_POSSIBLE)` (supported since Appium Java Client 11.1.0). Precedence order is: field-level `@HowToUseLocators` > widget class `@HowToUseLocators` > page/declaring class `@HowToUseLocators` (including superclasses, interfaces, and enclosing classes) > the `defaultLocatorGroupStrategy` passed to `AppiumFieldDecorator` > `LocatorGroupStrategy.CHAIN`. Note that `@HowToUseLocators` attributes default to `LocatorGroupStrategy.CHAIN`, so when `@HowToUseLocators` is present on a field or class, any platform attribute not explicitly specified in that annotation resolves to `CHAIN`.
+
 If time of the waiting for elements differs from usual (longer, or shorter when element is needed only for quick checkings/assertions) then 
 
 ```java
@@ -665,7 +684,7 @@ and then
 
 This use case has some restrictions;
 
-- All classes which are declared by the OverrideWidget annotation should be subclasses of the class declared by field
+- All classes which are declared by the OverrideWidget annotation should be subclasses of the class declared by the field, or implementations of the interface declared by the field
 
 - All classes which are declared by the OverrideWidget should not be abstract. If a declared class is overridden partially like 
 
@@ -679,6 +698,20 @@ This use case has some restrictions;
   //
 
   //below is the other field/method declaration
+```
+
+The field may be an interface implemented by those classes. Each class named by `@OverrideWidget` must extend `Widget` and implement the interface. The interface must be public. Creation succeeds when this library's class loader can see that interface, or when the interface's class loader can see this library. A package-private or protected interface, and loaders that cannot see either way, fail with `IllegalArgumentException` instead of a linkage error. A content type that is left as the default cannot be instantiated, so name a class for every content type the field is used with:
+
+```java
+public interface UsersWidget {
+    void doWork();
+}
+
+@FindBy(id = "users")
+@OverrideWidget(html = HtmlUsersWidget.class,
+        androidUIAutomator = AndroidUsersWidget.class,
+        iOSXCUITAutomation = IosUsersWidget.class)
+UsersWidget widget;
 ```
 
 - for now it is not possible to 
