@@ -26,7 +26,9 @@ import io.appium.java_client.support.CacheLookup;
 import io.appium.java_client.support.FindAll;
 import io.appium.java_client.support.FindBy;
 import io.appium.java_client.support.FindBys;
+import io.appium.java_client.support.PageFactory;
 import io.appium.java_client.support.pagefactory.ByAll;
+import org.jspecify.annotations.Nullable;
 import org.openqa.selenium.By;
 
 import java.lang.annotation.Annotation;
@@ -42,9 +44,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static io.appium.java_client.pagefactory.AppiumFieldDecorator.extractWidgetClass;
 import static java.lang.Integer.signum;
 import static java.util.Arrays.asList;
-import static java.util.Optional.ofNullable;
+import static java.util.Objects.requireNonNull;
 
 /** Builds locators of elements from Appium-specific page object annotations. */
 public class DefaultElementByBuilder extends AppiumByBuilder {
@@ -53,6 +56,11 @@ public class DefaultElementByBuilder extends AppiumByBuilder {
     private static final String VALUE = "value";
     private static final Class<?>[] ANNOTATION_ARGUMENTS = new Class[]{};
     private static final Object[] ANNOTATION_PARAMETERS = new Object[]{};
+    private final LocatorGroupStrategy defaultLocatorGroupStrategy;
+    @Nullable
+    private Class<?> currentPageClass;
+    @Nullable
+    private Class<? extends Widget> currentWidgetClass;
 
     /**
      * Creates a new builder.
@@ -61,7 +69,26 @@ public class DefaultElementByBuilder extends AppiumByBuilder {
      * @param automation the name of the current automation
      */
     public DefaultElementByBuilder(String platform, String automation) {
+        this(platform, automation, LocatorGroupStrategy.CHAIN);
+    }
+
+    /**
+     * Creates a new builder with a custom default {@link LocatorGroupStrategy}.
+     *
+     * @param platform the name of the current platform
+     * @param automation the name of the current automation
+     * @param defaultLocatorGroupStrategy the default strategy used when {@link HowToUseLocators} is not present
+     */
+    public DefaultElementByBuilder(
+            String platform,
+            String automation,
+            LocatorGroupStrategy defaultLocatorGroupStrategy
+    ) {
         super(platform, automation);
+        this.defaultLocatorGroupStrategy = requireNonNull(
+                defaultLocatorGroupStrategy,
+                "Default locator group strategy must not be null"
+        );
     }
 
     private static void checkDisallowedAnnotationPairs(Annotation a1, Annotation a2)
@@ -78,9 +105,7 @@ public class DefaultElementByBuilder extends AppiumByBuilder {
         if (bys.length == 0) {
             return null;
         }
-        LocatorGroupStrategy strategy = ofNullable(locatorGroupStrategy)
-                .orElse(LocatorGroupStrategy.CHAIN);
-        if (strategy.equals(LocatorGroupStrategy.ALL_POSSIBLE)) {
+        if (LocatorGroupStrategy.ALL_POSSIBLE.equals(locatorGroupStrategy)) {
             return new ByAll(bys);
         }
         return new ByChained(bys);
@@ -100,23 +125,24 @@ public class DefaultElementByBuilder extends AppiumByBuilder {
     @Override
     protected By buildDefaultBy() {
         AnnotatedElement annotatedElement = annotatedElementContainer.getAnnotated();
+        Field field = annotatedElement instanceof Field ? (Field) annotatedElement : null;
         By defaultBy = null;
         FindBy findBy = SeleniumAnnotationsCompat.find(annotatedElement, FindBy.class);
         if (findBy != null) {
-            defaultBy = new FindBy.FindByBuilder().buildIt(findBy, (Field) annotatedElement);
+            defaultBy = new FindBy.FindByBuilder().buildIt(findBy, field);
         }
 
         if (defaultBy == null) {
             FindBys findBys = SeleniumAnnotationsCompat.find(annotatedElement, FindBys.class);
             if (findBys != null) {
-                defaultBy = new FindBys.FindByBuilder().buildIt(findBys, (Field) annotatedElement);
+                defaultBy = new FindBys.FindByBuilder().buildIt(findBys, field);
             }
         }
 
         if (defaultBy == null) {
             FindAll findAll = SeleniumAnnotationsCompat.find(annotatedElement, FindAll.class);
             if (findAll != null) {
-                defaultBy = new FindAll.FindByBuilder().buildIt(findAll, (Field) annotatedElement);
+                defaultBy = new FindAll.FindByBuilder().buildIt(findAll, field);
             }
         }
         return defaultBy;
@@ -165,21 +191,117 @@ public class DefaultElementByBuilder extends AppiumByBuilder {
         return result.toArray(new By[0]);
     }
 
+    void setDecorationContext(@Nullable Class<?> pageClass, @Nullable Class<? extends Widget> widgetClass) {
+        this.currentPageClass = pageClass;
+        this.currentWidgetClass = widgetClass;
+    }
+
+    @Nullable
+    Class<? extends Widget> resolveWidgetClassForField(Field field) {
+        if (currentWidgetClass != null) {
+            return currentWidgetClass;
+        }
+        Class<?> pageClass = currentPageClass != null ? currentPageClass : PageFactory.getCurrentPageClass();
+        return extractWidgetClass(field, pageClass);
+    }
+
+    private Optional<HowToUseLocators> findHowToUseLocators(AnnotatedElement annotatedElement) {
+        if (annotatedElement == null) {
+            return Optional.empty();
+        }
+        HowToUseLocators direct = annotatedElement.getAnnotation(HowToUseLocators.class);
+        if (direct != null) {
+            return Optional.of(direct);
+        }
+        if (annotatedElement instanceof Field) {
+            Field field = (Field) annotatedElement;
+            Class<?> widgetClass = resolveWidgetClassForField(field);
+            if (widgetClass != null) {
+                HowToUseLocators widgetAnnotation = findClassHowToUseLocators(widgetClass);
+                if (widgetAnnotation != null) {
+                    return Optional.of(widgetAnnotation);
+                }
+            }
+            Class<?> pageClass = currentPageClass != null ? currentPageClass : PageFactory.getCurrentPageClass();
+            if (pageClass != null && field.getDeclaringClass().isAssignableFrom(pageClass)) {
+                HowToUseLocators pageAnnotation = findClassHowToUseLocators(pageClass);
+                if (pageAnnotation != null) {
+                    return Optional.of(pageAnnotation);
+                }
+            }
+            return Optional.ofNullable(findClassHowToUseLocators(field.getDeclaringClass()));
+        }
+        if (annotatedElement instanceof Class<?>) {
+            return Optional.ofNullable(findClassHowToUseLocators((Class<?>) annotatedElement));
+        }
+        return Optional.empty();
+    }
+
+    @Nullable
+    private static HowToUseLocators findClassHowToUseLocators(@Nullable Class<?> clazz) {
+        for (Class<?> current = clazz; current != null; current = current.getEnclosingClass()) {
+            HowToUseLocators annotation = current.getAnnotation(HowToUseLocators.class);
+            if (annotation != null) {
+                return annotation;
+            }
+            HowToUseLocators interfaceAnnotation = findInterfaceHowToUseLocators(current);
+            if (interfaceAnnotation != null) {
+                return interfaceAnnotation;
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    private static HowToUseLocators findInterfaceHowToUseLocators(@Nullable Class<?> clazz) {
+        for (Class<?> current = clazz; current != null && !Object.class.equals(current);
+                current = current.getSuperclass()) {
+            for (Class<?> iface : current.getInterfaces()) {
+                HowToUseLocators annotation = findOnInterfaceHierarchy(iface);
+                if (annotation != null) {
+                    return annotation;
+                }
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    private static HowToUseLocators findOnInterfaceHierarchy(Class<?> iface) {
+        HowToUseLocators direct = iface.getAnnotation(HowToUseLocators.class);
+        if (direct != null) {
+            return direct;
+        }
+        for (Class<?> parentIface : iface.getInterfaces()) {
+            HowToUseLocators parentAnnotation = findOnInterfaceHierarchy(parentIface);
+            if (parentAnnotation != null) {
+                return parentAnnotation;
+            }
+        }
+        return null;
+    }
+
     @Override
     protected By buildMobileNativeBy() {
         AnnotatedElement annotatedElement = annotatedElementContainer.getAnnotated();
-        HowToUseLocators howToUseLocators = annotatedElement.getAnnotation(HowToUseLocators.class);
-
-        Optional<HowToUseLocators> howToUseLocatorsOptional = ofNullable(howToUseLocators);
+        Optional<HowToUseLocators> howToUseLocatorsOptional = findHowToUseLocators(annotatedElement);
 
         if (isAndroid()) {
-            return buildMobileBy(howToUseLocatorsOptional.map(HowToUseLocators::androidAutomation).orElse(null),
-                    getBys(AndroidFindBy.class, AndroidFindBys.class, AndroidFindAll.class));
+            return buildMobileBy(
+                    howToUseLocatorsOptional
+                            .map(HowToUseLocators::androidAutomation)
+                            .orElse(defaultLocatorGroupStrategy),
+                    getBys(AndroidFindBy.class, AndroidFindBys.class, AndroidFindAll.class)
+            );
         }
 
         if (isIOSXcuit() || isIOS() || isTvOS()) {
-            return buildMobileBy(howToUseLocatorsOptional.map(HowToUseLocators::iOSXCUITAutomation).orElse(null),
-                    getBys(iOSXCUITFindBy.class, iOSXCUITFindBys.class, iOSXCUITFindAll.class));
+            return buildMobileBy(
+                    howToUseLocatorsOptional
+                            .map(HowToUseLocators::iOSXCUITAutomation)
+                            .orElse(defaultLocatorGroupStrategy),
+                    getBys(iOSXCUITFindBy.class, iOSXCUITFindBys.class, iOSXCUITFindAll.class)
+            );
         }
 
         return null;
@@ -198,32 +320,31 @@ public class DefaultElementByBuilder extends AppiumByBuilder {
         return new ContentMappedBy(contentMap);
     }
 
-    @Override
-    public By buildBy() {
-        assertValidAnnotations();
-
-        By defaultBy = buildDefaultBy();
-        By mobileNativeBy = buildMobileNativeBy();
-
-        String idOrName = ((Field) annotatedElementContainer.getAnnotated()).getName();
+    By buildMappedBy(@Nullable By defaultBy, @Nullable By mobileNativeBy) {
+        AnnotatedElement annotatedElement = annotatedElementContainer.getAnnotated();
+        String idOrName = annotatedElement instanceof Field
+                ? ((Field) annotatedElement).getName()
+                : ((Class<?>) annotatedElement).getSimpleName();
 
         if (defaultBy == null && mobileNativeBy == null) {
-            defaultBy = new ByIdOrName(((Field) annotatedElementContainer.getAnnotated()).getName());
-            mobileNativeBy = new By.ById(idOrName);
-            return returnMappedBy(defaultBy, mobileNativeBy);
+            return returnMappedBy(new ByIdOrName(idOrName), new By.ById(idOrName));
         }
 
         if (defaultBy == null) {
-            defaultBy = new ByIdOrName(((Field) annotatedElementContainer.getAnnotated()).getName());
-            return returnMappedBy(defaultBy, mobileNativeBy);
+            return returnMappedBy(new ByIdOrName(idOrName), mobileNativeBy);
         }
 
         if (mobileNativeBy == null) {
-            mobileNativeBy = defaultBy;
-            return returnMappedBy(defaultBy, mobileNativeBy);
+            return returnMappedBy(defaultBy, defaultBy);
         }
 
         return returnMappedBy(defaultBy, mobileNativeBy);
+    }
+
+    @Override
+    public By buildBy() {
+        assertValidAnnotations();
+        return buildMappedBy(buildDefaultBy(), buildMobileNativeBy());
     }
 
     private static class AnnotationComparator implements Comparator<Annotation> {
